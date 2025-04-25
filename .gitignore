@@ -1,0 +1,25 @@
+# 编译后的二进制文件
+/notify
+/bin/
+/dist/
+
+# 日志文件
+*.log
+
+# 配置文件（保留示例配置）
+/config.yaml
+~/.notify/
+
+# Go临时文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+.idea/
+*.iml
+.DS_Store
+__debug_bin*
+
+# Go模块文件
+/vendor/ 

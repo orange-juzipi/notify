@@ -1,0 +1,59 @@
+# GitHub配置
+github:
+  # GitHub个人访问令牌，用于访问API
+  token: "your-github-token"
+  
+  # 是否自动监控用户的所有仓库（设置为true则不需要手动列出仓库）
+  auto_watch_user: true
+  
+  # 是否监控用户已star的仓库
+  watch_starred: true
+  
+  # 要监控的组织（可选）
+  watch_orgs:
+    - "your-organization"
+  
+  # 是否只监控有release的仓库（避免大量404错误）
+  only_with_releases: true
+  
+  # 手动指定的仓库列表（如果启用了auto_watch_user，此列表是额外的）
+  repos:
+    - owner: "owner1"
+      name: "repo1"
+    - owner: "owner2" 
+      name: "repo2"
+
+# 通知渠道配置
+notifications:
+  # 钉钉机器人配置
+  dingtalk:
+    enabled: true
+    webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+    secret: "your-dingtalk-secret"
+  
+  # Telegram机器人配置
+  telegram:
+    enabled: true
+    bot_token: "your-telegram-bot-token"
+    chat_id: "your-telegram-chat-id"
+
+# 定时运行配置
+schedule:
+  # 是否启用定时运行（作为守护进程）
+  enabled: true
+  # 检查间隔，支持的格式: 10s, 1m, 1h, 24h
+  interval: "6h"
+
+# 通知内容模板，支持Go模板语法
+template: |
+  ## 📦 新版本发布通知
+  
+  **仓库**: {{.Repository}}
+  
+  **版本**: {{.TagName}}
+  
+  **发布时间**: {{.PublishedAt.Format "2006-01-02 15:04:05"}}
+  
+  {{.Description}}
+  
+  **[查看详情]({{.HTMLURL}})** 
