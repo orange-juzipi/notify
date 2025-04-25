@@ -65,6 +65,17 @@ func (c *Client) GetLatestRelease(owner, repo string) (*ReleaseInfo, error) {
 	}
 
 	tagName := release.GetTagName()
+	publishedTime := release.GetPublishedAt().Time
+
+	// 检查是否在7天内发布（基于中国时间）
+	// 获取中国时区（UTC+8）
+	chinaLoc := time.FixedZone("CST", 8*60*60)
+	sevenDaysAgo := time.Now().In(chinaLoc).AddDate(0, 0, -7)
+
+	if publishedTime.Before(sevenDaysAgo) {
+		// 如果发布时间早于7天前，则忽略这个版本
+		return nil, nil
+	}
 
 	// 检查是否为新版本
 	if !c.store.IsNewRelease(owner, repo, tagName) {
@@ -110,6 +121,11 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 			fmt.Printf("⚠️ 警告: GitHub API 请求配额不足，仅剩 %d 次请求\n", remaining)
 		}
 	}
+
+	// 显示仅检查最近7天的提示
+	chinaLoc := time.FixedZone("CST", 8*60*60)
+	sevenDaysAgo := time.Now().In(chinaLoc).AddDate(0, 0, -7)
+	fmt.Printf("仅检查最近7天（%s 之后）发布的版本\n", sevenDaysAgo.Format("2006-01-02"))
 
 	var repoConfigs []config.RepoConfig
 
@@ -298,14 +314,14 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 	if rateLimitHit {
 		fmt.Printf("- 由于达到GitHub API速率限制，部分仓库未能检查\n")
 	}
-	fmt.Printf("- 发现 %d 个新版本\n", len(results))
-	fmt.Printf("- %d 个仓库没有release\n", noReleaseCount)
+	fmt.Printf("- 发现 %d 个最近7天内发布的新版本\n", len(results))
+	fmt.Printf("- %d 个仓库没有release或发布时间超过7天\n", noReleaseCount)
 	if errorCount > 0 {
 		fmt.Printf("- %d 个仓库检查失败\n", errorCount)
 	}
 
 	if len(results) == 0 {
-		fmt.Println("\n提示: 未发现任何新版本。如果您想测试通知功能，可以:")
+		fmt.Println("\n提示: 未发现任何7天内发布的新版本。如果您想测试通知功能，可以:")
 		fmt.Println("1. 在您的任意GitHub仓库中创建一个新的release")
 		fmt.Println("2. 修改状态文件 ~/.notify/state.json 删除对应仓库的记录")
 		fmt.Println("3. 手动在配置文件中添加要监控的特定仓库")
