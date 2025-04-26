@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,13 +75,46 @@ func runOnce(cfg *config.Config) error {
 		return fmt.Errorf("创建通知管理器失败: %v", err)
 	}
 
+	// 打印发现的版本数量
+	fmt.Printf("找到 %d 个新版本发布，准备发送通知...\n", len(releases))
+
+	if len(releases) > 20 {
+		fmt.Println("警告: 发现的版本超过20个，将会分批发送以避免触发钉钉的速率限制（每分钟最多20条消息）")
+	}
+
 	// 发送通知
 	errors := manager.NotifyAll(releases)
 	if len(errors) > 0 {
+		// 分析错误以提供更好的反馈
+		var rateLimitErrors, otherErrors []error
+
 		for _, err := range errors {
+			if strings.Contains(err.Error(), "速率限制") ||
+				strings.Contains(err.Error(), "频率超过限制") {
+				rateLimitErrors = append(rateLimitErrors, err)
+			} else {
+				otherErrors = append(otherErrors, err)
+			}
+		}
+
+		// 打印速率限制错误
+		if len(rateLimitErrors) > 0 {
+			fmt.Println("\n⚠️ 触发了钉钉机器人的速率限制（每分钟最多20条消息）")
+			fmt.Println("建议：")
+			fmt.Println("- 减少单次监控的仓库数量")
+			fmt.Println("- 增加定时任务的时间间隔")
+			fmt.Println("- 下一次通知将在限流冷却期（10分钟）后恢复")
+		}
+
+		// 打印其他错误
+		for _, err := range otherErrors {
 			fmt.Printf("发送通知失败: %v\n", err)
 		}
-		return fmt.Errorf("部分通知发送失败")
+
+		if len(otherErrors) > 0 {
+			return fmt.Errorf("部分通知发送失败")
+		}
+		return fmt.Errorf("由于速率限制，部分通知发送失败")
 	}
 
 	fmt.Printf("成功发送了 %d 个版本发布通知\n", len(releases))
@@ -118,6 +152,14 @@ func runAsScheduler(cfg *config.Config) error {
 		case <-ticker.C:
 			fmt.Printf("定时检查触发: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 			if err := runOnce(cfg); err != nil {
+				// 检查是否是速率限制错误
+				if strings.Contains(err.Error(), "速率限制") ||
+					strings.Contains(err.Error(), "频率超过限制") {
+					fmt.Println("由于触发钉钉机器人速率限制，等待额外冷却时间...")
+					// 如果是速率限制错误，等待额外的时间
+					time.Sleep(10 * time.Minute)
+				}
+
 				fmt.Printf("定时检查失败: %v\n", err)
 				// 继续下一次检查，不中断
 			}

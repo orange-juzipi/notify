@@ -1,7 +1,10 @@
 package notifier
 
 import (
+	"fmt"
+	"strings"
 	"text/template"
+	"time"
 
 	"github.com/orange-juzipi/notify/config"
 	"github.com/orange-juzipi/notify/pkg/github"
@@ -72,17 +75,65 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 func (m *Manager) NotifyAll(releases []*github.ReleaseInfo) []error {
 	var errors []error
 
+	// 为了确保消息不会超过钉钉的频率限制（每分钟20条），我们会分批发送
+	const batchSize = 15                   // 设置小于限制的安全值
+	const batchInterval = 60 * time.Second // 每批次之间的时间间隔
+
+	// 按批次处理发布信息
+	for i := 0; i < len(releases); i += batchSize {
+		end := i + batchSize
+		if end > len(releases) {
+			end = len(releases)
+		}
+
+		batch := releases[i:end]
+		batchErrors := m.sendBatch(batch)
+		errors = append(errors, batchErrors...)
+
+		// 如果还有更多批次需要处理，等待一段时间
+		if end < len(releases) {
+			fmt.Printf("已发送 %d/%d 条通知，为避免超过频率限制，等待 %v 后继续...\n",
+				end, len(releases), batchInterval)
+			time.Sleep(batchInterval)
+		}
+	}
+
+	return errors
+}
+
+// sendBatch 发送一批通知
+func (m *Manager) sendBatch(releases []*github.ReleaseInfo) []error {
+	var errors []error
+
 	for _, release := range releases {
 		for _, n := range m.notifiers {
 			if n.IsEnabled() {
 				if err := n.Send(release); err != nil {
+					// 检查是否是速率限制错误
+					if isRateLimitError(err) {
+						fmt.Printf("警告: 遇到速率限制 - %v\n", err)
+						// 对于速率限制错误，我们添加一个特殊的错误消息
+						errors = append(errors, fmt.Errorf("速率限制触发: %v", err))
+						// 不再继续发送其他通知，避免冷却期延长
+						return errors
+					}
 					errors = append(errors, err)
 				}
+				// 每次发送后稍微等待一下，进一步降低触发限流的风险
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
 
 	return errors
+}
+
+// isRateLimitError 判断是否是速率限制错误
+func isRateLimitError(err error) bool {
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "频率超过限制") ||
+		strings.Contains(errMsg, "rate limit") ||
+		strings.Contains(errMsg, "too many requests")
 }
 
 // RenderTemplate 渲染通知模板

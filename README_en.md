@@ -10,6 +10,7 @@ A GitHub repository release notification service that sends repository updates t
 - Support for DingTalk and Telegram notification channels
 - Customizable notification templates
 - Flexible scheduling configuration
+- Smart DingTalk message rate limit management
 
 ## Quick Start
 
@@ -37,7 +38,7 @@ A GitHub repository release notification service that sends repository updates t
 2. Build the project
 
    ```bash
-   go build -o notify .
+   make release
    ```
 
 3. Prepare the configuration file
@@ -50,7 +51,7 @@ A GitHub repository release notification service that sends repository updates t
 4. Run the service
 
    ```bash
-   ./notify
+   ./release/notify/notify-linux-amd64
    ```
 
 ## Configuration
@@ -110,6 +111,26 @@ To comply with GitHub API rate limits, the tool uses the following strategies:
 > If you need to monitor a large number of repositories, it's recommended to set the check interval to a longer time or use a GitHub App installation token.
 >
 > When using the auto-monitoring feature, please ensure you provide sufficient GitHub API permissions. For monitoring organization repositories, the token used needs to have appropriate organization access permissions.
+
+## DingTalk Rate Limit Management
+
+DingTalk bots have specific rate limits:
+
+- Each bot can send a maximum of 20 messages per minute
+- If this limit is exceeded, the bot will be throttled for 10 minutes
+
+This tool implements intelligent rate limit management:
+
+- Automatically sends notifications in batches to avoid triggering rate limits
+- Adds appropriate delays between batches
+- Automatically waits during the cooldown period when rate limiting is encountered
+- Provides clear rate limiting prompts and suggestions for resolution
+
+When monitoring a large number of repositories or when there are many updates, it's recommended to:
+
+1. Increase the check interval of scheduled tasks (schedule.interval)
+2. Reduce the number of repositories monitored at once
+3. Split notifications across multiple instances using different DingTalk bots
 
 ## License
 
