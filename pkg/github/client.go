@@ -53,7 +53,7 @@ func NewClient(token string, storePath string) (*Client, error) {
 }
 
 // GetLatestRelease 获取仓库最新的Release
-func (c *Client) GetLatestRelease(owner, repo string) (*ReleaseInfo, error) {
+func (c *Client) GetLatestRelease(owner, repo string, showDescription bool) (*ReleaseInfo, error) {
 	release, resp, err := c.client.Repositories.GetLatestRelease(c.ctx, owner, repo)
 	if err != nil {
 		// 检查是否是404错误（没有release）
@@ -88,19 +88,25 @@ func (c *Client) GetLatestRelease(owner, repo string) (*ReleaseInfo, error) {
 		// 继续处理，不中断流程
 	}
 
-	return &ReleaseInfo{
-		Owner:      owner,
-		Repository: repo,
-		TagName:    tagName,
-		Name:       release.GetName(),
-		// Description: release.GetBody(),// 不显示 {描述} 信息，需要显示则解开注释
+	releaseInfo := &ReleaseInfo{
+		Owner:       owner,
+		Repository:  repo,
+		TagName:     tagName,
+		Name:        release.GetName(),
 		HTMLURL:     release.GetHTMLURL(),
 		PublishedAt: release.GetPublishedAt().Time,
-	}, nil
+	}
+
+	// 根据showDescription参数决定是否包含描述信息
+	if showDescription {
+		releaseInfo.Description = release.GetBody()
+	}
+
+	return releaseInfo, nil
 }
 
 // CheckForNewReleases 检查所有配置的仓库是否有新版本
-func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
+func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseInfo, error) {
 	client, err := NewClient(cfg.GitHub.Token, "")
 	if err != nil {
 		return nil, fmt.Errorf("创建GitHub客户端失败: %v", err)
@@ -127,11 +133,15 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 	sevenDaysAgo := time.Now().In(chinaLoc).AddDate(0, 0, -7)
 	fmt.Printf("仅检查最近7天（%s 之后）发布的版本\n", sevenDaysAgo.Format("2006-01-02"))
 
-	var repoConfigs []config.RepoConfig
+	// 使用map去重，避免重复监控同一个仓库
+	repoMap := make(map[string]config.RepoConfig)
 
 	// 如果配置了手动指定的仓库，添加到待检查列表
 	if len(cfg.GitHub.Repos) > 0 {
-		repoConfigs = append(repoConfigs, cfg.GitHub.Repos...)
+		for _, repo := range cfg.GitHub.Repos {
+			key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+			repoMap[key] = repo
+		}
 	}
 
 	// 如果启用了自动监控用户仓库
@@ -142,7 +152,10 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 			fmt.Printf("获取用户仓库列表失败: %v\n", err)
 		} else {
 			fmt.Printf("找到 %d 个用户仓库\n", len(userRepos))
-			repoConfigs = append(repoConfigs, userRepos...)
+			for _, repo := range userRepos {
+				key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+				repoMap[key] = repo
+			}
 		}
 	}
 
@@ -154,7 +167,10 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 			fmt.Printf("获取用户已star的仓库列表失败: %v\n", err)
 		} else {
 			fmt.Printf("找到 %d 个已star的仓库\n", len(starredRepos))
-			repoConfigs = append(repoConfigs, starredRepos...)
+			for _, repo := range starredRepos {
+				key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+				repoMap[key] = repo
+			}
 		}
 	}
 
@@ -168,8 +184,17 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 				continue
 			}
 			fmt.Printf("找到 %d 个组织仓库\n", len(orgRepos))
-			repoConfigs = append(repoConfigs, orgRepos...)
+			for _, repo := range orgRepos {
+				key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+				repoMap[key] = repo
+			}
 		}
+	}
+
+	// 将去重后的仓库列表转换为切片
+	var repoConfigs []config.RepoConfig
+	for _, repo := range repoMap {
+		repoConfigs = append(repoConfigs, repo)
 	}
 
 	// 如果没有找到要监控的仓库
@@ -185,14 +210,26 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 			if cfg.GitHub.AutoWatchUser {
 				userRepos, err := client.getUserRepositories(false)
 				if err == nil && len(userRepos) > 0 {
-					allRepos = append(allRepos, userRepos...)
+					for _, repo := range userRepos {
+						key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+						if _, exists := repoMap[key]; !exists {
+							repoMap[key] = repo
+							allRepos = append(allRepos, repo)
+						}
+					}
 				}
 			}
 
 			if cfg.GitHub.WatchStarred && len(allRepos) == 0 {
 				starredRepos, err := client.getUserStarredRepositories(false)
 				if err == nil && len(starredRepos) > 0 {
-					allRepos = append(allRepos, starredRepos...)
+					for _, repo := range starredRepos {
+						key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+						if _, exists := repoMap[key]; !exists {
+							repoMap[key] = repo
+							allRepos = append(allRepos, repo)
+						}
+					}
 				}
 			}
 
@@ -239,7 +276,7 @@ func CheckForNewReleases(cfg *config.Config) ([]*ReleaseInfo, error) {
 	checkRepo := func(r config.RepoConfig) {
 		defer wg.Done()
 
-		release, err := client.GetLatestRelease(r.Owner, r.Name)
+		release, err := client.GetLatestRelease(r.Owner, r.Name, showDescription)
 
 		mu.Lock()
 		defer mu.Unlock()

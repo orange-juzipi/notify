@@ -21,7 +21,8 @@ func main() {
 }
 
 var (
-	configFile string
+	configFile      string
+	showDescription bool
 )
 
 // RootCmd 表示没有子命令时的基础命令
@@ -50,12 +51,14 @@ var RootCmd = &cobra.Command{
 func init() {
 	// 添加配置文件标志
 	RootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "配置文件路径 (默认为 ./config.yaml 或 ~/.notify/config.yaml)")
+	// 添加是否显示描述的标志
+	RootCmd.PersistentFlags().BoolVarP(&showDescription, "show-description", "d", false, "是否在通知中显示仓库版本描述信息")
 }
 
 // runOnce 执行一次检查
 func runOnce(cfg *config.Config) error {
 	// 检查新版本
-	releases, err := github.CheckForNewReleases(cfg)
+	releases, err := github.CheckForNewReleases(cfg, showDescription)
 	if err != nil {
 		return fmt.Errorf("检查新版本失败: %v", err)
 	}
