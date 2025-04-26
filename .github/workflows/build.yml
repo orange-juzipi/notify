@@ -69,7 +69,7 @@ jobs:
           LAST_TAG=$(git describe --tags --abbrev=0 $(git rev-list --tags --skip=1 --max-count=1))
           echo "上一个 Tag: $LAST_TAG"
           echo "生成变更日志..."
-          LOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s @%an (#%h)")
+          LOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s ([#%h](https://github.com/${GITHUB_REPOSITORY}/commit/%h))")
           echo "$LOG"
           # 输出到 Github Actions 的输出变量
           echo "text<<EOF" >> $GITHUB_ENV
