@@ -2,6 +2,8 @@
 /notify
 /bin/
 /dist/
+build
+release
 
 # 日志文件
 *.log
@@ -9,6 +11,13 @@
 # 配置文件（保留示例配置）
 /config.yaml
 ~/.notify/
+
+# 环境变量文件，可能包含敏感信息
+.env
+*.env
+
+# 状态文件
+state.json
 
 # Go临时文件
 *.exe
@@ -23,6 +32,3 @@ __debug_bin*
 
 # Go模块文件
 /vendor/ 
-
-build
-release

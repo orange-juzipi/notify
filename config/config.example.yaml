@@ -16,6 +16,9 @@ github:
   # 是否只监控有release的仓库（避免大量404错误）
   only_with_releases: true
   
+  # 检查最近多少天内的版本发布（默认3天）
+  check_days: 3
+  
   # 手动指定的仓库列表（如果启用了auto_watch_user，此列表是额外的）
   repos:
     - owner: "owner1"

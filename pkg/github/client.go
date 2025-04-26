@@ -53,7 +53,7 @@ func NewClient(token string, storePath string) (*Client, error) {
 }
 
 // GetLatestRelease 获取仓库最新的Release
-func (c *Client) GetLatestRelease(owner, repo string, showDescription bool) (*ReleaseInfo, error) {
+func (c *Client) GetLatestRelease(owner, repo string, showDescription bool, checkDays int) (*ReleaseInfo, error) {
 	release, resp, err := c.client.Repositories.GetLatestRelease(c.ctx, owner, repo)
 	if err != nil {
 		// 检查是否是404错误（没有release）
@@ -67,13 +67,13 @@ func (c *Client) GetLatestRelease(owner, repo string, showDescription bool) (*Re
 	tagName := release.GetTagName()
 	publishedTime := release.GetPublishedAt().Time
 
-	// 检查是否在7天内发布（基于中国时间）
+	// 检查是否在指定天数内发布（基于中国时间）
 	// 获取中国时区（UTC+8）
 	chinaLoc := time.FixedZone("CST", 8*60*60)
-	sevenDaysAgo := time.Now().In(chinaLoc).AddDate(0, 0, -7)
+	checkPeriodAgo := time.Now().In(chinaLoc).AddDate(0, 0, -checkDays)
 
-	if publishedTime.Before(sevenDaysAgo) {
-		// 如果发布时间早于7天前，则忽略这个版本
+	if publishedTime.Before(checkPeriodAgo) {
+		// 如果发布时间早于检查期限，则忽略这个版本
 		return nil, nil
 	}
 
@@ -128,10 +128,10 @@ func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseIn
 		}
 	}
 
-	// 显示仅检查最近7天的提示
+	// 显示仅检查最近N天的提示
 	chinaLoc := time.FixedZone("CST", 8*60*60)
-	sevenDaysAgo := time.Now().In(chinaLoc).AddDate(0, 0, -7)
-	fmt.Printf("仅检查最近7天（%s 之后）发布的版本\n", sevenDaysAgo.Format("2006-01-02"))
+	checkPeriodAgo := time.Now().In(chinaLoc).AddDate(0, 0, -cfg.GitHub.CheckDays)
+	fmt.Printf("仅检查最近%d天（%s 之后）发布的版本\n", cfg.GitHub.CheckDays, checkPeriodAgo.Format("2006-01-02"))
 
 	// 使用map去重，避免重复监控同一个仓库
 	repoMap := make(map[string]config.RepoConfig)
@@ -276,7 +276,7 @@ func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseIn
 	checkRepo := func(r config.RepoConfig) {
 		defer wg.Done()
 
-		release, err := client.GetLatestRelease(r.Owner, r.Name, showDescription)
+		release, err := client.GetLatestRelease(r.Owner, r.Name, showDescription, cfg.GitHub.CheckDays)
 
 		mu.Lock()
 		defer mu.Unlock()
@@ -351,14 +351,14 @@ func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseIn
 	if rateLimitHit {
 		fmt.Printf("- 由于达到GitHub API速率限制，部分仓库未能检查\n")
 	}
-	fmt.Printf("- 发现 %d 个最近7天内发布的新版本\n", len(results))
-	fmt.Printf("- %d 个仓库没有release或发布时间超过7天\n", noReleaseCount)
+	fmt.Printf("- 发现 %d 个最近%d天内发布的新版本\n", len(results), cfg.GitHub.CheckDays)
+	fmt.Printf("- %d 个仓库没有release或发布时间超过%d天\n", noReleaseCount, cfg.GitHub.CheckDays)
 	if errorCount > 0 {
 		fmt.Printf("- %d 个仓库检查失败\n", errorCount)
 	}
 
 	if len(results) == 0 {
-		fmt.Println("\n提示: 未发现任何7天内发布的新版本。如果您想测试通知功能，可以:")
+		fmt.Printf("\n提示: 未发现任何%d天内发布的新版本。如果您想测试通知功能，可以:\n", cfg.GitHub.CheckDays)
 		fmt.Println("1. 在您的任意GitHub仓库中创建一个新的release")
 		fmt.Println("2. 修改状态文件 ~/.notify/state.json 删除对应仓库的记录")
 		fmt.Println("3. 手动在配置文件中添加要监控的特定仓库")

@@ -54,6 +54,30 @@ A GitHub repository release notification service that sends repository updates t
    ./release/notify/notify-linux-amd64
    ```
 
+## Command-line Arguments
+
+The program supports the following command-line arguments:
+
+- `-c, --config <file>`: Specify the configuration file path
+- `-d, --show-description`: Include version release descriptions in notifications
+- `-n, --days <number>`: Check for releases published within the specified number of days (default is 3 days)
+
+Examples:
+
+```bash
+# Use a custom configuration file
+./notify --config=/path/to/my-config.yaml
+
+# Check for releases in the last 7 days
+./notify --days=7
+
+# Show complete release descriptions
+./notify --show-description
+
+# Combine multiple parameters
+./notify --days=5 --show-description
+```
+
 ## Configuration
 
 The configuration file uses YAML format and includes the following main sections:
@@ -72,6 +96,7 @@ github:
         - "src/"
   watch_starred: false        # Whether to monitor starred repositories
   watch_organizations: false  # Whether to monitor organization repositories
+  check_days: 3               # Check for releases within this many days (default 3)
 ```
 
 ### Notification Configuration

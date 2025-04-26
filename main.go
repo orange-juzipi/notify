@@ -24,6 +24,7 @@ func main() {
 var (
 	configFile      string
 	showDescription bool
+	checkDays       int
 )
 
 // RootCmd 表示没有子命令时的基础命令
@@ -37,6 +38,11 @@ var RootCmd = &cobra.Command{
 		cfg, err := config.LoadConfig(configFile)
 		if err != nil {
 			return fmt.Errorf("加载配置失败: %v", err)
+		}
+
+		// 如果命令行参数设置了检查天数，覆盖配置文件中的设置
+		if cmd.Flags().Changed("days") {
+			cfg.GitHub.CheckDays = checkDays
 		}
 
 		// 如果启用了定时运行
@@ -54,6 +60,8 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "配置文件路径 (默认为 ./config.yaml 或 ~/.notify/config.yaml)")
 	// 添加是否显示描述的标志
 	RootCmd.PersistentFlags().BoolVarP(&showDescription, "show-description", "d", false, "是否在通知中显示仓库版本描述信息")
+	// 添加检查天数的标志
+	RootCmd.PersistentFlags().IntVarP(&checkDays, "days", "n", config.DefaultCheckDays, "检查最近多少天内的版本发布")
 }
 
 // runOnce 执行一次检查

@@ -1,14 +1,18 @@
 package notifier
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"log"
 	"strings"
 	"text/template"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/orange-juzipi/notify/config"
 	"github.com/orange-juzipi/notify/pkg/github"
-	"github.com/orange-juzipi/notify/pkg/helper"
 	"github.com/orange-juzipi/notify/pkg/notifier/dingtalk"
 	"github.com/orange-juzipi/notify/pkg/notifier/telegram"
 )
@@ -25,6 +29,7 @@ type Notifier interface {
 type Manager struct {
 	notifiers []Notifier
 	template  *template.Template
+	limiter   *rate.Limiter
 }
 
 // NewManager 创建通知管理器
@@ -35,9 +40,14 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 
+	// 使用标准库的速率限制器，每分钟20条消息
+	// 设置为 1条/3秒，突发容量为5条，更加安全
+	limiter := rate.NewLimiter(rate.Every(3*time.Second), 5)
+
 	// 创建通知器
 	manager := &Manager{
 		template: tmpl,
+		limiter:  limiter,
 	}
 
 	// 添加钉钉通知器
@@ -47,11 +57,10 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 			WebhookURL: cfg.Notifications.DingTalk.WebhookURL,
 			Secret:     cfg.Notifications.DingTalk.Secret,
 		}
-		dingTalk, err := dingtalk.New(dingTalkConfig, tmpl)
+		err = manager.AddDingTalkNotifier(dingTalkConfig)
 		if err != nil {
 			return nil, err
 		}
-		manager.notifiers = append(manager.notifiers, dingTalk)
 	}
 
 	// 添加Telegram通知器
@@ -61,11 +70,10 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 			BotToken: cfg.Notifications.Telegram.BotToken,
 			ChatID:   cfg.Notifications.Telegram.ChatID,
 		}
-		telegram, err := telegram.New(telegramConfig, tmpl)
+		err = manager.AddTelegramNotifier(telegramConfig)
 		if err != nil {
 			return nil, err
 		}
-		manager.notifiers = append(manager.notifiers, telegram)
 	}
 
 	return manager, nil
@@ -74,10 +82,13 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 // NotifyAll 向所有启用的通知器发送通知
 func (m *Manager) NotifyAll(releases []*github.ReleaseInfo) []error {
 	var errors []error
+	ctx := context.Background()
 
-	// 为了确保消息不会超过钉钉的频率限制（每分钟20条），我们会分批发送
-	const batchSize = 15                   // 设置小于限制的安全值
-	const batchInterval = 60 * time.Second // 每批次之间的时间间隔
+	// 以最大限流速率作为批次处理周期
+	const batchSize = 10
+	const batchTimeout = 30 * time.Second
+
+	log.Printf("开始发送通知，共 %d 条...", len(releases))
 
 	// 按批次处理发布信息
 	for i := 0; i < len(releases); i += batchSize {
@@ -87,14 +98,17 @@ func (m *Manager) NotifyAll(releases []*github.ReleaseInfo) []error {
 		}
 
 		batch := releases[i:end]
-		batchErrors := m.sendBatch(batch)
+		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
+		batchErrors := m.sendBatch(batchCtx, batch)
+		cancel()
+
 		errors = append(errors, batchErrors...)
 
-		// 如果还有更多批次需要处理，等待一段时间
+		// 如果还有更多批次，等待一下再继续
 		if end < len(releases) {
-			fmt.Printf("已发送 %d/%d 条通知，为避免超过频率限制，等待 %v 后继续...\n",
-				end, len(releases), batchInterval)
-			time.Sleep(batchInterval)
+			// 打印当前进度
+			log.Printf("已发送 %d/%d 条通知 (%d%%)", end, len(releases), end*100/len(releases))
+			time.Sleep(2 * time.Second)
 		}
 	}
 
@@ -102,25 +116,33 @@ func (m *Manager) NotifyAll(releases []*github.ReleaseInfo) []error {
 }
 
 // sendBatch 发送一批通知
-func (m *Manager) sendBatch(releases []*github.ReleaseInfo) []error {
+func (m *Manager) sendBatch(ctx context.Context, releases []*github.ReleaseInfo) []error {
 	var errors []error
 
 	for _, release := range releases {
 		for _, n := range m.notifiers {
-			if n.IsEnabled() {
-				if err := n.Send(release); err != nil {
-					// 检查是否是速率限制错误
-					if isRateLimitError(err) {
-						fmt.Printf("警告: 遇到速率限制 - %v\n", err)
-						// 对于速率限制错误，我们添加一个特殊的错误消息
-						errors = append(errors, fmt.Errorf("速率限制触发: %v", err))
-						// 不再继续发送其他通知，避免冷却期延长
-						return errors
-					}
+			if !n.IsEnabled() {
+				continue
+			}
+
+			// 使用标准库限流器等待令牌
+			err := m.limiter.Wait(ctx)
+			if err != nil {
+				errors = append(errors, fmt.Errorf("限流等待错误: %v", err))
+				continue
+			}
+
+			// 发送通知
+			if err := n.Send(release); err != nil {
+				// 检查是否是速率限制错误
+				if isRateLimitError(err) {
+					log.Printf("警告: 遇到速率限制 - %v", err)
+					// 对于速率限制错误，等待较长时间后再尝试
+					time.Sleep(5 * time.Second)
+					errors = append(errors, fmt.Errorf("速率限制: %v", err))
+				} else {
 					errors = append(errors, err)
 				}
-				// 每次发送后稍微等待一下，进一步降低触发限流的风险
-				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
@@ -138,5 +160,39 @@ func isRateLimitError(err error) bool {
 
 // RenderTemplate 渲染通知模板
 func RenderTemplate(tmpl *template.Template, release *github.ReleaseInfo) (string, error) {
-	return helper.RenderTemplate(tmpl, release)
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, release); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// AddDingTalkNotifier 添加钉钉通知器
+func (m *Manager) AddDingTalkNotifier(config dingtalk.Config) error {
+	if !config.Enabled {
+		return nil
+	}
+
+	notifier, err := dingtalk.New(config, m.template)
+	if err != nil {
+		return err
+	}
+
+	m.notifiers = append(m.notifiers, notifier)
+	return nil
+}
+
+// AddTelegramNotifier 添加Telegram通知器
+func (m *Manager) AddTelegramNotifier(config telegram.Config) error {
+	if !config.Enabled {
+		return nil
+	}
+
+	notifier, err := telegram.New(config, m.template)
+	if err != nil {
+		return err
+	}
+
+	m.notifiers = append(m.notifiers, notifier)
+	return nil
 }

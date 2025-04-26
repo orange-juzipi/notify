@@ -2,6 +2,7 @@ package dingtalk
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,8 +14,9 @@ import (
 	"text/template"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/orange-juzipi/notify/pkg/github"
-	"github.com/orange-juzipi/notify/pkg/helper"
 )
 
 // Config 钉钉通知配置
@@ -24,25 +26,17 @@ type Config struct {
 	Secret     string
 }
 
-// RateLimiter 钉钉消息速率限制器
-type RateLimiter struct {
-	mutex       sync.Mutex
-	messageTime []time.Time
-	// 钉钉机器人每分钟最多发送20条消息
-	rateLimit    int
-	windowLength time.Duration
-	// 被限流后的冷却时间（10分钟）
-	cooldownTime time.Duration
-	// 是否处于冷却期
-	inCooldown    bool
-	cooldownUntil time.Time
-}
-
 // Notifier 钉钉通知器
 type Notifier struct {
-	config      Config
-	template    *template.Template
-	rateLimiter *RateLimiter
+	config   Config
+	template *template.Template
+	limiter  *rate.Limiter // 速率限制器
+	client   *http.Client  // 复用HTTP客户端，提高性能
+	mu       sync.Mutex    // 用于保护冷却状态
+	cooldown struct {
+		active bool
+		until  time.Time
+	}
 }
 
 // New 创建钉钉通知器
@@ -52,18 +46,25 @@ func New(config Config, tmpl *template.Template) (*Notifier, error) {
 	}
 
 	// 创建速率限制器
-	rateLimiter := &RateLimiter{
-		messageTime:  make([]time.Time, 0),
-		rateLimit:    20,               // 每分钟最多20条消息
-		windowLength: time.Minute,      // 时间窗口为1分钟
-		cooldownTime: 10 * time.Minute, // 冷却时间10分钟
-		inCooldown:   false,
+	// 钉钉API限制为每分钟20条消息，设置为每3秒一条，突发允许5条
+	limiter := rate.NewLimiter(rate.Every(3*time.Second), 5)
+
+	// 创建带超时的HTTP客户端
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
 	return &Notifier{
-		config:      config,
-		template:    tmpl,
-		rateLimiter: rateLimiter,
+		config:   config,
+		template: tmpl,
+		limiter:  limiter,
+		client:   client,
+		cooldown: struct {
+			active bool
+			until  time.Time
+		}{
+			active: false,
+		},
 	}, nil
 }
 
@@ -72,66 +73,73 @@ func (n *Notifier) IsEnabled() bool {
 	return n.config.Enabled
 }
 
+// renderTemplate 渲染通知模板
+func (n *Notifier) renderTemplate(release *github.ReleaseInfo) (string, error) {
+	var buf bytes.Buffer
+	if err := n.template.Execute(&buf, release); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 // canSendMessage 检查是否可以发送消息
-func (n *Notifier) canSendMessage() bool {
-	n.rateLimiter.mutex.Lock()
-	defer n.rateLimiter.mutex.Unlock()
+func (n *Notifier) canSendMessage() (bool, time.Duration) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
 	now := time.Now()
 
 	// 检查是否在冷却期
-	if n.rateLimiter.inCooldown {
-		if now.Before(n.rateLimiter.cooldownUntil) {
-			// 仍在冷却期内，不能发送
-			return false
-		}
-		// 冷却期已过
-		n.rateLimiter.inCooldown = false
-		n.rateLimiter.messageTime = make([]time.Time, 0)
+	if n.cooldown.active && now.Before(n.cooldown.until) {
+		return false, n.cooldown.until.Sub(now)
 	}
 
-	// 清理过期的消息时间记录
-	validTimes := make([]time.Time, 0)
-	windowStart := now.Add(-n.rateLimiter.windowLength)
+	// 冷却期已过或未激活
+	n.cooldown.active = false
+	return true, 0
+}
 
-	for _, t := range n.rateLimiter.messageTime {
-		if t.After(windowStart) {
-			validTimes = append(validTimes, t)
-		}
-	}
-	n.rateLimiter.messageTime = validTimes
+// setCooldown 设置冷却期
+func (n *Notifier) setCooldown(duration time.Duration) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-	// 检查是否超过速率限制
-	if len(n.rateLimiter.messageTime) >= n.rateLimiter.rateLimit {
-		// 触发冷却期
-		n.rateLimiter.inCooldown = true
-		n.rateLimiter.cooldownUntil = now.Add(n.rateLimiter.cooldownTime)
-		return false
-	}
-
-	// 可以发送消息，记录本次时间
-	n.rateLimiter.messageTime = append(n.rateLimiter.messageTime, now)
-	return true
+	n.cooldown.active = true
+	n.cooldown.until = time.Now().Add(duration)
 }
 
 // Send 发送钉钉通知
 func (n *Notifier) Send(release *github.ReleaseInfo) error {
 	// 检查是否可以发送消息
-	if !n.canSendMessage() {
-		cooldownRemaining := n.rateLimiter.cooldownUntil.Sub(time.Now())
-		if cooldownRemaining > 0 {
-			return fmt.Errorf("钉钉消息发送频率超过限制（每分钟20条），正在冷却中，剩余时间：%v", cooldownRemaining.Round(time.Second))
-		}
-		return fmt.Errorf("钉钉消息发送频率超过限制（每分钟20条）")
+	canSend, remaining := n.canSendMessage()
+	if !canSend {
+		return fmt.Errorf("钉钉消息发送频率超过限制，冷却中，剩余时间：%v", remaining.Round(time.Second))
 	}
 
-	content, err := helper.RenderTemplate(n.template, release)
+	// 控制发送频率
+	ctx := context.Background()
+	if err := n.limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("速率限制等待错误: %v", err)
+	}
+
+	content, err := n.renderTemplate(release)
 	if err != nil {
 		return err
 	}
 
 	title := fmt.Sprintf("仓库 %s/%s 发布新版本 %s", release.Owner, release.Repository, release.TagName)
-	return n.sendMarkdown(title, content)
+	err = n.sendMarkdown(title, content)
+
+	// 检查是否需要触发冷却期
+	if err != nil && (err.Error() == "频率超过限制" ||
+		err.Error() == "too many requests" ||
+		err.Error() == "rate limit exceeded") {
+		// 触发10分钟冷却期
+		n.setCooldown(10 * time.Minute)
+		return fmt.Errorf("触发钉钉API限流，已设置10分钟冷却期: %v", err)
+	}
+
+	return err
 }
 
 // 发送markdown消息
@@ -165,7 +173,8 @@ func (n *Notifier) sendMarkdown(title, text string) error {
 		webhook = n.addSignature(webhook)
 	}
 
-	resp, err := http.Post(webhook, "application/json", bytes.NewBuffer(msgBytes))
+	// 使用复用的HTTP客户端
+	resp, err := n.client.Post(webhook, "application/json", bytes.NewBuffer(msgBytes))
 	if err != nil {
 		return fmt.Errorf("发送消息失败: %v", err)
 	}
@@ -173,6 +182,24 @@ func (n *Notifier) sendMarkdown(title, text string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("请求失败，状态码: %d", resp.StatusCode)
+	}
+
+	// 解析响应，检查是否有错误
+	var response struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return fmt.Errorf("解析响应失败: %v", err)
+	}
+
+	if response.ErrCode != 0 {
+		// 错误码88表示频率超过限制
+		if response.ErrCode == 88 {
+			return fmt.Errorf("频率超过限制")
+		}
+		return fmt.Errorf("钉钉API错误: %s (code: %d)", response.ErrMsg, response.ErrCode)
 	}
 
 	return nil

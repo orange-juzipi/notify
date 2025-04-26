@@ -28,6 +28,8 @@ type GitHubConfig struct {
 	WatchOrgs []string `mapstructure:"watch_orgs"`
 	// 设置为true时，检查仓库是否有release并只监控有release的仓库
 	OnlyWithReleases bool `mapstructure:"only_with_releases"`
+	// 检查最近多少天内的版本发布，默认为3天
+	CheckDays int `mapstructure:"check_days"`
 }
 
 // RepoConfig 仓库配置
@@ -78,6 +80,9 @@ const DefaultTemplate = `## 📦 新版本发布通知
 // DefaultInterval 默认检查间隔时间 (6小时)
 const DefaultInterval = "6h"
 
+// DefaultCheckDays 默认检查最近多少天内的版本发布（3天）
+const DefaultCheckDays = 3
+
 // LoadConfig 从文件加载配置
 func LoadConfig(cfgFile string) (*Config, error) {
 	cfg := &Config{}
@@ -110,6 +115,7 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	viper.BindEnv("notifications.telegram.bot_token", "TELEGRAM_BOT_TOKEN")
 	viper.BindEnv("notifications.telegram.chat_id", "TELEGRAM_CHAT_ID")
 	viper.BindEnv("schedule.interval", "SCHEDULE_INTERVAL")
+	viper.BindEnv("github.check_days", "CHECK_DAYS")
 
 	// 读取配置文件
 	if err := viper.ReadInConfig(); err != nil {
@@ -131,6 +137,11 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// 设置默认检查间隔
 	if cfg.Schedule.Enabled && cfg.Schedule.Interval == "" {
 		cfg.Schedule.Interval = DefaultInterval
+	}
+
+	// 设置默认检查天数
+	if cfg.GitHub.CheckDays <= 0 {
+		cfg.GitHub.CheckDays = DefaultCheckDays
 	}
 
 	return cfg, nil

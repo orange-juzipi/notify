@@ -56,6 +56,30 @@ GitHub仓库变更通知服务，支持将GitHub仓库的更新发送到DingTalk
    ./release/notify/notify-linux-amd64
    ```
 
+## 命令行参数
+
+程序支持以下命令行参数：
+
+- `-c, --config <file>`: 指定配置文件路径
+- `-d, --show-description`: 在通知中显示版本描述信息
+- `-n, --days <number>`: 检查最近多少天内的版本发布（默认为3天）
+
+例如：
+
+```bash
+# 使用自定义配置文件
+./notify --config=/path/to/my-config.yaml
+
+# 检查最近7天的版本发布
+./notify --days=7
+
+# 显示完整的版本发布描述
+./notify --show-description
+
+# 组合使用多个参数
+./notify --days=5 --show-description
+```
+
 ## 配置说明
 
 配置文件使用YAML格式，包含以下主要部分：
@@ -74,6 +98,7 @@ github:
         - "src/"
   watch_starred: false        # 是否监控关注的仓库
   watch_organizations: false  # 是否监控组织仓库
+  check_days: 3               # 检查最近多少天内的版本发布（默认3天）
 ```
 
 ### 通知配置

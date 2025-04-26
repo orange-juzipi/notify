@@ -7,6 +7,7 @@ require (
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.1
 	golang.org/x/oauth2 v0.29.0
+	golang.org/x/time v0.11.0
 )
 
 require (
