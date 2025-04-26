@@ -39,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # ⚡ 重要！完整历史才能找上一个 tag
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -61,6 +63,19 @@ jobs:
           tar -czf notify-darwin-arm64.tar.gz notify-darwin-arm64 && \
           zip notify-windows-amd64.zip notify-windows-amd64.exe
 
+      - name: Generate Changelog
+        id: changelog
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 $(git rev-list --tags --skip=1 --max-count=1))
+          echo "上一个 Tag: $LAST_TAG"
+          echo "生成变更日志..."
+          LOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s @%an (#%h)")
+          echo "$LOG"
+          # 输出到 Github Actions 的输出变量
+          echo "text<<EOF" >> $GITHUB_ENV
+          echo "$LOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Release to GitHub
         uses: softprops/action-gh-release@v1
         with:
@@ -70,6 +85,7 @@ jobs:
             dist/notify-darwin-amd64.tar.gz
             dist/notify-darwin-arm64.tar.gz
             dist/notify-windows-amd64.zip
+          body: ${{ env.text }}
           draft: false
           prerelease: false
         env:
