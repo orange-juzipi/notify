@@ -53,7 +53,7 @@ func NewClient(token string, storePath string) (*Client, error) {
 }
 
 // GetLatestRelease 获取仓库最新的Release
-func (c *Client) GetLatestRelease(owner, repo string, showDescription bool, checkDays int) (*ReleaseInfo, error) {
+func (c *Client) GetLatestRelease(owner, repo string, showDescription bool, checkDays int, cfg *config.Config) (*ReleaseInfo, error) {
 	release, resp, err := c.client.Repositories.GetLatestRelease(c.ctx, owner, repo)
 	if err != nil {
 		// 检查是否是404错误（没有release）
@@ -67,10 +67,14 @@ func (c *Client) GetLatestRelease(owner, repo string, showDescription bool, chec
 	tagName := release.GetTagName()
 	publishedTime := release.GetPublishedAt().Time
 
-	// 检查是否在指定天数内发布（基于中国时间）
-	// 获取中国时区（UTC+8）
-	chinaLoc := time.FixedZone("CST", 8*60*60)
-	checkPeriodAgo := time.Now().In(chinaLoc).AddDate(0, 0, -checkDays)
+	// 检查是否在指定天数内发布（基于配置的时区）
+	loc, err := time.LoadLocation(cfg.GitHub.Timezone)
+	if err != nil {
+		// 如果加载时区失败，使用UTC
+		loc = time.UTC
+		fmt.Printf("警告: 加载时区 %s 失败，使用UTC: %v\n", cfg.GitHub.Timezone, err)
+	}
+	checkPeriodAgo := time.Now().In(loc).AddDate(0, 0, -checkDays)
 
 	if publishedTime.Before(checkPeriodAgo) {
 		// 如果发布时间早于检查期限，则忽略这个版本
@@ -94,7 +98,7 @@ func (c *Client) GetLatestRelease(owner, repo string, showDescription bool, chec
 		TagName:     tagName,
 		Name:        release.GetName(),
 		HTMLURL:     release.GetHTMLURL(),
-		PublishedAt: release.GetPublishedAt().Time,
+		PublishedAt: release.GetPublishedAt().Time.In(loc),
 	}
 
 	// 根据showDescription参数决定是否包含描述信息
@@ -129,8 +133,13 @@ func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseIn
 	}
 
 	// 显示仅检查最近N天的提示
-	chinaLoc := time.FixedZone("CST", 8*60*60)
-	checkPeriodAgo := time.Now().In(chinaLoc).AddDate(0, 0, -cfg.GitHub.CheckDays)
+	loc, err := time.LoadLocation(cfg.GitHub.Timezone)
+	if err != nil {
+		// 如果加载时区失败，使用UTC
+		loc = time.UTC
+		fmt.Printf("警告: 加载时区 %s 失败，使用UTC: %v\n", cfg.GitHub.Timezone, err)
+	}
+	checkPeriodAgo := time.Now().In(loc).AddDate(0, 0, -cfg.GitHub.CheckDays)
 	fmt.Printf("仅检查最近%d天（%s 之后）发布的版本\n", cfg.GitHub.CheckDays, checkPeriodAgo.Format("2006-01-02"))
 
 	// 使用map去重，避免重复监控同一个仓库
@@ -276,7 +285,7 @@ func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseIn
 	checkRepo := func(r config.RepoConfig) {
 		defer wg.Done()
 
-		release, err := client.GetLatestRelease(r.Owner, r.Name, showDescription, cfg.GitHub.CheckDays)
+		release, err := client.GetLatestRelease(r.Owner, r.Name, showDescription, cfg.GitHub.CheckDays, cfg)
 
 		mu.Lock()
 		defer mu.Unlock()

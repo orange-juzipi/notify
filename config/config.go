@@ -30,6 +30,8 @@ type GitHubConfig struct {
 	OnlyWithReleases bool `mapstructure:"only_with_releases"`
 	// 检查最近多少天内的版本发布，默认为3天
 	CheckDays int `mapstructure:"check_days"`
+	// 时区配置，默认为中国时区（UTC+8）
+	Timezone string `mapstructure:"timezone"`
 }
 
 // RepoConfig 仓库配置
@@ -82,6 +84,9 @@ const DefaultInterval = "6h"
 
 // DefaultCheckDays 默认检查最近多少天内的版本发布（3天）
 const DefaultCheckDays = 3
+
+// DefaultTimezone 默认时区（中国时区 UTC+8）
+const DefaultTimezone = "Asia/Shanghai"
 
 // LoadConfig 从文件加载配置
 func LoadConfig(cfgFile string) (*Config, error) {
@@ -142,6 +147,11 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// 设置默认检查天数
 	if cfg.GitHub.CheckDays <= 0 {
 		cfg.GitHub.CheckDays = DefaultCheckDays
+	}
+
+	// 设置默认时区
+	if cfg.GitHub.Timezone == "" {
+		cfg.GitHub.Timezone = DefaultTimezone
 	}
 
 	return cfg, nil
