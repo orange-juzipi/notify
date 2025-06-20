@@ -47,8 +47,8 @@ notifications:
 schedule:
   # 是否启用定时运行（作为守护进程）
   enabled: true
-  # 检查间隔，支持的格式: 10s, 1m, 1h, 24h
-  interval: "6h"
+  # cron表达式，支持如 "0 0 10,19 * * *" 表示每天10:00和19:00
+  cron: "0 0 10,19 * * *"
 
 # 通知内容模板，支持Go模板语法
 template: |

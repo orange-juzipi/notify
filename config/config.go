@@ -62,8 +62,8 @@ type TelegramConfig struct {
 
 // ScheduleConfig 定时运行配置
 type ScheduleConfig struct {
-	Enabled  bool   `mapstructure:"enabled"`
-	Interval string `mapstructure:"interval"`
+	Enabled bool   `mapstructure:"enabled"`
+	Cron    string `mapstructure:"cron"`
 }
 
 // DefaultTemplate 默认通知模板
@@ -137,11 +137,6 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// 设置默认模板
 	if cfg.Template == "" {
 		cfg.Template = DefaultTemplate
-	}
-
-	// 设置默认检查间隔
-	if cfg.Schedule.Enabled && cfg.Schedule.Interval == "" {
-		cfg.Schedule.Interval = DefaultInterval
 	}
 
 	// 设置默认检查天数

@@ -6,11 +6,11 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/orange-juzipi/notify/config"
 	"github.com/orange-juzipi/notify/pkg/github"
 	"github.com/orange-juzipi/notify/pkg/notifier"
+	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -131,46 +131,32 @@ func runOnce(cfg *config.Config) error {
 
 // runAsScheduler 作为定时任务运行
 func runAsScheduler(cfg *config.Config) error {
-	interval, err := time.ParseDuration(cfg.Schedule.Interval)
-	if err != nil {
-		return fmt.Errorf("解析定时间隔失败: %v", err)
-	}
-
-	fmt.Printf("以定时模式运行，检查间隔: %s\n", interval)
-
 	// 设置信号处理
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
-	// 创建定时器
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// 立即进行第一次检查
-	if err := runOnce(cfg); err != nil {
-		fmt.Printf("初始检查失败: %v\n", err)
-	}
-
-	// 等待信号或定时器
-	for {
-		select {
-		case <-signals:
-			fmt.Println("收到终止信号，程序退出")
-			return nil
-		case <-ticker.C:
-			fmt.Printf("定时检查触发: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-			if err := runOnce(cfg); err != nil {
-				// 检查是否是速率限制错误
-				if strings.Contains(err.Error(), "速率限制") ||
-					strings.Contains(err.Error(), "频率超过限制") {
-					fmt.Println("由于触发钉钉机器人速率限制，等待额外冷却时间...")
-					// 如果是速率限制错误，等待额外的时间
-					time.Sleep(10 * time.Minute)
-				}
-
+	if cfg.Schedule.Cron != "" {
+		fmt.Printf("以cron表达式模式运行，表达式: %s\n", cfg.Schedule.Cron)
+		c := cron.New(cron.WithSeconds())
+		_, err := c.AddFunc(cfg.Schedule.Cron, func() {
+			err := runOnce(cfg)
+			if err != nil {
 				fmt.Printf("定时检查失败: %v\n", err)
-				// 继续下一次检查，不中断
 			}
+		})
+		if err != nil {
+			return fmt.Errorf("解析cron表达式失败: %v", err)
 		}
+		// 立即进行第一次检查
+		if err := runOnce(cfg); err != nil {
+			fmt.Printf("初始检查失败: %v\n", err)
+		}
+		c.Start()
+		defer c.Stop()
+		<-signals
+		fmt.Println("收到终止信号，程序退出")
+		return nil
 	}
+
+	return fmt.Errorf("未配置cron表达式，请在配置文件中设置schedule.cron")
 }
