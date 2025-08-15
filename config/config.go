@@ -80,7 +80,7 @@ const DefaultTemplate = `## 📦 新版本发布通知
 **[查看详情]({{.HTMLURL}})**`
 
 // DefaultInterval 默认检查间隔时间 (6小时)
-const DefaultInterval = "6h"
+// const DefaultInterval = "6h"
 
 // DefaultCheckDays 默认检查最近多少天内的版本发布（3天）
 const DefaultCheckDays = 3

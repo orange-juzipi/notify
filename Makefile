@@ -24,7 +24,7 @@ build-all: build-linux build-macos build-windows
 # Build for Linux
 build-linux:
 	@echo "Building for Linux..."
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(PROJECT_NAME)-linux-amd64 main.go
+	GOOS=linux GOARCH=amd64 GOEXPERIMENT=greenteagc go build $(LDFLAGS) -o $(BUILD_DIR)/$(PROJECT_NAME)-linux-amd64 main.go
 	cp $(BUILD_DIR)/$(PROJECT_NAME)-linux-amd64 $(RELEASE_DIR)/$(PROJECT_NAME)-linux-amd64
 
 # Build for macOS
