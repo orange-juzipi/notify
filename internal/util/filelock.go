@@ -1,10 +1,15 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
+)
+
+var (
+	// errWouldBlock 表示非阻塞模式下锁已被占用
+	errWouldBlock = errors.New("lock would block")
 )
 
 // FileLock 文件锁，用于防止多个进程同时运行
@@ -42,11 +47,14 @@ func (fl *FileLock) Lock() error {
 		return fmt.Errorf("打开锁文件失败: %v", err)
 	}
 
-	// 尝试获取排他锁
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	// 尝试获取排他锁（非阻塞）
+	err = fl.lockFile(file, true)
 	if err != nil {
 		file.Close()
-		return fmt.Errorf("已有其他实例正在运行（无法获取文件锁）")
+		if err == errWouldBlock {
+			return fmt.Errorf("已有其他实例正在运行（无法获取文件锁）")
+		}
+		return err
 	}
 
 	fl.file = file
@@ -69,13 +77,13 @@ func (fl *FileLock) TryLock() (bool, error) {
 	}
 
 	// 尝试获取排他锁（非阻塞）
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	err = fl.lockFile(file, true)
 	if err != nil {
 		file.Close()
-		if err == syscall.EWOULDBLOCK {
+		if err == errWouldBlock {
 			return false, nil // 锁已被占用
 		}
-		return false, fmt.Errorf("获取锁失败: %v", err)
+		return false, err
 	}
 
 	fl.file = file
@@ -97,10 +105,10 @@ func (fl *FileLock) Unlock() error {
 	}
 
 	// 释放锁
-	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN)
+	err := fl.unlockFile(fl.file)
 	if err != nil {
 		fl.file.Close()
-		return fmt.Errorf("释放锁失败: %v", err)
+		return err
 	}
 
 	// 关闭文件
