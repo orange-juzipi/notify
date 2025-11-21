@@ -21,6 +21,8 @@ import (
 type Notifier interface {
 	// Send 发送通知
 	Send(release *github.ReleaseInfo) error
+	// SendBatch 批量发送通知（合并成一条消息）
+	SendBatch(releases []*github.ReleaseInfo) error
 	// IsEnabled 是否启用
 	IsEnabled() bool
 }
@@ -40,9 +42,10 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 
-	// 使用标准库的速率限制器，每分钟20条消息
-	// 设置为 1条/3秒，突发容量为5条，更加安全
-	limiter := rate.NewLimiter(rate.Every(3*time.Second), 5)
+	// 使用标准库的速率限制器
+	// 设置为 1条/4秒（15条/分钟），突发容量为3条
+	// 这样配合钉钉的限制器，确保不会超过每分钟20条的硬性限制
+	limiter := rate.NewLimiter(rate.Every(4*time.Second), 3)
 
 	// 创建通知器
 	manager := &Manager{
@@ -80,69 +83,80 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 }
 
 // NotifyAll 向所有启用的通知器发送通知
+// 每10个仓库合并成一条消息发送
 func (m *Manager) NotifyAll(releases []*github.ReleaseInfo) []error {
 	var errors []error
 	ctx := context.Background()
 
-	// 以最大限流速率作为批次处理周期
-	const batchSize = 10
-	const batchTimeout = 30 * time.Second
+	// 每条消息包含10个仓库的更新
+	const releasesPerMessage = 10
+	// 钉钉限制：每分钟最多20条消息
+	// 每批发送15条消息（包含150个仓库的更新），然后等待1分钟
+	const messagesPerBatch = 15
+	const batchTimeout = 2 * time.Minute
+	const waitBetweenBatches = 65 * time.Second
 
-	log.Printf("开始发送通知，共 %d 条...", len(releases))
+	// 计算需要发送的消息数量
+	totalMessages := (len(releases) + releasesPerMessage - 1) / releasesPerMessage
+	log.Printf("开始发送通知: %d 个仓库更新，合并为 %d 条消息", len(releases), totalMessages)
 
-	// 按批次处理发布信息
-	for i := 0; i < len(releases); i += batchSize {
-		end := i + batchSize
+	messagesSent := 0
+
+	// 按每10个仓库一组进行分组
+	for i := 0; i < len(releases); i += releasesPerMessage {
+		end := i + releasesPerMessage
 		if end > len(releases) {
 			end = len(releases)
 		}
 
-		batch := releases[i:end]
+		group := releases[i:end]
+		messagesSent++
+
 		batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
-		batchErrors := m.sendBatch(batchCtx, batch)
+		batchErrors := m.sendBatchMessage(batchCtx, group)
 		cancel()
 
 		errors = append(errors, batchErrors...)
 
-		// 如果还有更多批次，等待一下再继续
-		if end < len(releases) {
-			// 打印当前进度
-			log.Printf("已发送 %d/%d 条通知 (%d%%)", end, len(releases), end*100/len(releases))
-			time.Sleep(2 * time.Second)
+		// 每发送 messagesPerBatch 条消息后，等待一段时间
+		if messagesSent%messagesPerBatch == 0 && messagesSent < totalMessages {
+			log.Printf("已发送 %d/%d 条消息，等待后继续...", messagesSent, totalMessages)
+			time.Sleep(waitBetweenBatches)
+		} else if messagesSent < totalMessages {
+			// 消息之间的间隔（避免过快）
+			time.Sleep(4 * time.Second)
 		}
 	}
 
 	return errors
 }
 
-// sendBatch 发送一批通知
-func (m *Manager) sendBatch(ctx context.Context, releases []*github.ReleaseInfo) []error {
+// sendBatchMessage 发送一条合并消息（包含多个仓库更新）
+func (m *Manager) sendBatchMessage(ctx context.Context, releases []*github.ReleaseInfo) []error {
 	var errors []error
 
-	for _, release := range releases {
-		for _, n := range m.notifiers {
-			if !n.IsEnabled() {
-				continue
-			}
+	for _, n := range m.notifiers {
+		if !n.IsEnabled() {
+			continue
+		}
 
-			// 使用标准库限流器等待令牌
-			err := m.limiter.Wait(ctx)
-			if err != nil {
-				errors = append(errors, fmt.Errorf("限流等待错误: %v", err))
-				continue
-			}
+		// 使用标准库限流器等待令牌
+		err := m.limiter.Wait(ctx)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("限流等待错误: %v", err))
+			continue
+		}
 
-			// 发送通知
-			if err := n.Send(release); err != nil {
-				// 检查是否是速率限制错误
-				if isRateLimitError(err) {
-					log.Printf("警告: 遇到速率限制 - %v", err)
-					// 对于速率限制错误，等待较长时间后再尝试
-					time.Sleep(5 * time.Second)
-					errors = append(errors, fmt.Errorf("速率限制: %v", err))
-				} else {
-					errors = append(errors, err)
-				}
+		// 发送批量通知
+		if err := n.SendBatch(releases); err != nil {
+			// 检查是否是速率限制错误
+			if isRateLimitError(err) {
+				log.Printf("警告: 遇到速率限制 - %v", err)
+				time.Sleep(5 * time.Second)
+				errors = append(errors, fmt.Errorf("速率限制: %v", err))
+			} else {
+				log.Printf("发送失败 - %v", err)
+				errors = append(errors, err)
 			}
 		}
 	}

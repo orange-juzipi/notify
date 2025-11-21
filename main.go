@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/orange-juzipi/notify/config"
+	"github.com/orange-juzipi/notify/internal/util"
 	"github.com/orange-juzipi/notify/pkg/github"
 	"github.com/orange-juzipi/notify/pkg/notifier"
 	"github.com/robfig/cron/v3"
@@ -34,6 +35,21 @@ var RootCmd = &cobra.Command{
 	Long: `Notify 是一个GitHub仓库版本发布通知工具，支持钉钉和Telegram通知渠道。
 可以通过配置文件或环境变量设置要监控的仓库和通知方式。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// 创建文件锁，防止多个实例同时运行
+		lock, err := util.NewFileLock("")
+		if err != nil {
+			return fmt.Errorf("创建文件锁失败: %v", err)
+		}
+
+		// 尝试获取锁
+		err = lock.Lock()
+		if err != nil {
+			return fmt.Errorf("⚠️  %v\n提示：请检查是否有其他 notify 进程正在运行", err)
+		}
+		defer lock.Unlock()
+
+		fmt.Printf("✓ 获取进程锁成功 (PID: %d)\n", os.Getpid())
+
 		// 加载配置
 		cfg, err := config.LoadConfig(configFile)
 		if err != nil {

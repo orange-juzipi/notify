@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"text/template"
 	"time"
@@ -46,8 +47,10 @@ func New(config Config, tmpl *template.Template) (*Notifier, error) {
 	}
 
 	// 创建速率限制器
-	// 钉钉API限制为每分钟20条消息，设置为每3秒一条，突发允许5条
-	limiter := rate.NewLimiter(rate.Every(3*time.Second), 5)
+	// 钉钉API限制为每分钟20条消息
+	// 为了保险起见，设置为每4秒一条（15条/分钟），突发允许3条
+	// 这样即使有突发，也不会超过20条/分钟的限制
+	limiter := rate.NewLimiter(rate.Every(4*time.Second), 3)
 
 	// 创建带超时的HTTP客户端
 	client := &http.Client{
@@ -142,6 +145,65 @@ func (n *Notifier) Send(release *github.ReleaseInfo) error {
 	return err
 }
 
+// SendBatch 批量发送钉钉通知（合并成一条消息）
+func (n *Notifier) SendBatch(releases []*github.ReleaseInfo) error {
+	if len(releases) == 0 {
+		return nil
+	}
+
+	// 检查是否可以发送消息
+	canSend, remaining := n.canSendMessage()
+	if !canSend {
+		return fmt.Errorf("钉钉消息发送频率超过限制，冷却中，剩余时间：%v", remaining.Round(time.Second))
+	}
+
+	// 控制发送频率
+	ctx := context.Background()
+	if err := n.limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("速率限制等待错误: %v", err)
+	}
+
+	// 构建批量消息内容
+	var content bytes.Buffer
+	content.WriteString("## 📦 新版本发布汇总\n\n")
+	content.WriteString(fmt.Sprintf("共 %d 个仓库发布了新版本：\n\n", len(releases)))
+
+	for i, release := range releases {
+		content.WriteString(fmt.Sprintf("### %d. [%s/%s](%s)\n\n",
+			i+1, release.Owner, release.Repository, release.HTMLURL))
+		content.WriteString(fmt.Sprintf("**版本**: %s\n\n", release.TagName))
+		content.WriteString(fmt.Sprintf("**发布时间**: %s\n\n",
+			release.PublishedAt.Format("2006-01-02 15:04:05")))
+
+		// 如果有描述信息，添加部分描述（限制长度）
+		if release.Description != "" {
+			desc := release.Description
+			if len(desc) > 100 {
+				desc = desc[:100] + "..."
+			}
+			// 移除换行符，避免格式混乱
+			desc = strings.ReplaceAll(desc, "\n", " ")
+			content.WriteString(fmt.Sprintf("**说明**: %s\n\n", desc))
+		}
+
+		content.WriteString("---\n\n")
+	}
+
+	title := fmt.Sprintf("GitHub 版本更新汇总（%d 个仓库）", len(releases))
+	err := n.sendMarkdown(title, content.String())
+
+	// 检查是否需要触发冷却期
+	if err != nil && (err.Error() == "频率超过限制" ||
+		err.Error() == "too many requests" ||
+		err.Error() == "rate limit exceeded") {
+		// 触发10分钟冷却期
+		n.setCooldown(10 * time.Minute)
+		return fmt.Errorf("触发钉钉API限流，已设置10分钟冷却期: %v", err)
+	}
+
+	return err
+}
+
 // 发送markdown消息
 func (n *Notifier) sendMarkdown(title, text string) error {
 	type markdownMsg struct {
@@ -195,8 +257,8 @@ func (n *Notifier) sendMarkdown(title, text string) error {
 	}
 
 	if response.ErrCode != 0 {
-		// 错误码88表示频率超过限制
-		if response.ErrCode == 88 {
+		// 错误码88和660026都表示频率超过限制
+		if response.ErrCode == 88 || response.ErrCode == 660026 {
 			return fmt.Errorf("频率超过限制")
 		}
 		return fmt.Errorf("钉钉API错误: %s (code: %d)", response.ErrMsg, response.ErrCode)

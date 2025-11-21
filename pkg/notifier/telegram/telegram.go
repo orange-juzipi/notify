@@ -137,6 +137,48 @@ func (n *Notifier) Send(release *github.ReleaseInfo) error {
 	return err
 }
 
+// SendBatch 批量发送Telegram通知（合并成一条消息）
+func (n *Notifier) SendBatch(releases []*github.ReleaseInfo) error {
+	if len(releases) == 0 {
+		return nil
+	}
+
+	// 检查是否可以发送消息
+	canSend, remaining := n.canSendMessage()
+	if !canSend {
+		return fmt.Errorf("Telegram消息发送频率超过限制，冷却中，剩余时间：%v", remaining.Round(time.Second))
+	}
+
+	// 控制发送频率
+	ctx := context.Background()
+	if err := n.limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("速率限制等待错误: %v", err)
+	}
+
+	// 构建批量消息内容
+	var content bytes.Buffer
+	content.WriteString("📦 *GitHub 版本更新汇总*\n\n")
+	content.WriteString(fmt.Sprintf("共 %d 个仓库发布了新版本：\n\n", len(releases)))
+
+	for i, release := range releases {
+		content.WriteString(fmt.Sprintf("*%d. %s/%s*\n",
+			i+1, release.Owner, release.Repository))
+		content.WriteString(fmt.Sprintf("版本: `%s`\n", release.TagName))
+		content.WriteString(fmt.Sprintf("时间: %s\n",
+			release.PublishedAt.Format("2006-01-02 15:04:05")))
+		content.WriteString(fmt.Sprintf("[查看详情](%s)\n\n", release.HTMLURL))
+	}
+
+	err := n.sendMessage(content.String())
+	if err != nil && (err.Error() == "too many requests" || err.Error() == "rate limit exceeded") {
+		// Telegram 429 错误触发冷却期
+		n.setCooldown(1 * time.Minute)
+		return fmt.Errorf("触发Telegram API限流，已设置1分钟冷却期: %v", err)
+	}
+
+	return err
+}
+
 // sendMessage 发送消息到Telegram
 func (n *Notifier) sendMessage(text string) error {
 	type messageRequest struct {

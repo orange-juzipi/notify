@@ -81,16 +81,21 @@ func (c *Client) GetLatestRelease(owner, repo string, showDescription bool, chec
 		return nil, nil
 	}
 
-	// 检查是否为新版本
-	if !c.store.IsNewRelease(owner, repo, tagName) {
-		return nil, nil // 返回nil表示没有新版本
+	// 使用原子性方法检查并更新状态（包括保存到文件），避免并发竞态条件
+	// CheckAndUpdateIfNew 会在内部完成状态检查、内存更新和文件保存的原子操作
+	isNew, err := c.store.CheckAndUpdateIfNew(owner, repo, tagName)
+	if err != nil {
+		// 如果更新状态失败，返回错误而不是继续处理
+		// 这样可以避免在状态未保存的情况下发送通知
+		return nil, fmt.Errorf("检查并更新版本状态失败: %v", err)
 	}
 
-	// 更新状态
-	if err := c.store.UpdateState(owner, repo, tagName); err != nil {
-		fmt.Printf("警告: 更新版本状态失败: %v\n", err)
-		// 继续处理，不中断流程
+	if !isNew {
+		// 不是新版本，直接返回
+		return nil, nil
 	}
+
+	// 是新版本，状态已经在 CheckAndUpdateIfNew 中保存
 
 	releaseInfo := &ReleaseInfo{
 		Owner:       owner,
@@ -274,12 +279,13 @@ func CheckForNewReleases(cfg *config.Config, showDescription bool) ([]*ReleaseIn
 
 	// 根据GitHub API速率限制，设置合理的并发数
 	// 对于认证用户，主要速率限制是每小时5000次请求
-	// 考虑到每个仓库检查只需要一个请求，可以适当提高并发度
-	// 但设置上限以避免触发二级速率限制（最多每分钟发送900个点的请求）
-	concurrencyLimit := 10 // 10个并发请求，避免触发二级速率限制
+	// GitHub 的二级速率限制：每分钟最多100个并发请求
+	// 设置为50个并发，既快速又安全
+	concurrencyLimit := 50 // 50个并发请求
 
-	// 对于大量仓库，分批处理以避免过快消耗速率限制
-	batchSize := 100 // 每批处理100个仓库
+	// 对于大量仓库，分批处理
+	// 每批处理500个仓库，加快检查速度
+	batchSize := 500 // 每批处理500个仓库
 
 	// 处理可能的速率限制重试
 	checkRepo := func(r config.RepoConfig) {
@@ -506,8 +512,8 @@ func (c *Client) filterReposWithReleases(allRepos []config.RepoConfig, repoType 
 		mu            sync.Mutex
 		wg            sync.WaitGroup
 		checked       int32
-		batchSize     = 20 // 每批处理的仓库数量
-		workerCount   = 20 // 最大并发worker数
+		batchSize     = 100 // 每批处理的仓库数量（提升到100）
+		workerCount   = 50  // 最大并发worker数（提升到50）
 		semaphore     = make(chan struct{}, workerCount)
 		progressCh    = make(chan int, len(allRepos))
 		done          = make(chan struct{})
